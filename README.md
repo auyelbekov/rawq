@@ -4,6 +4,8 @@ Context retrieval engine for AI agents.
 
 Semantic + lexical search over codebases. Single Rust binary. Fully offline. Built for AI agents.
 
+![demo](https://github.com/user-attachments/assets/55e739e6-70c7-4648-a386-cf13062f3be9)
+
 ## Why
 
 AI agents waste tokens reading irrelevant files. rawq returns only the relevant code — with file paths, line ranges, scope names, and confidence scores. Searching a 10k-file codebase yields 5-10 relevant chunks instead of 50+ full files.
