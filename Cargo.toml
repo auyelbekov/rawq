@@ -1,0 +1,84 @@
+[package]
+name = "rawq"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/auyelbekov/rawq"
+description = "Context retrieval engine for AI agents — semantic + lexical search, single Rust binary, fully offline"
+keywords = ["search", "semantic", "embedding", "code", "ai"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
+
+[[bin]]
+name = "rawq"
+path = "src/main.rs"
+
+[lib]
+name = "rawq"
+path = "src/lib.rs"
+
+[features]
+default = []
+directml = ["ort/directml", "dep:windows"]
+cuda = ["ort/cuda"]
+coreml = ["ort/coreml"]
+
+[dependencies]
+# Embedding / ONNX
+ort = { version = "2.0.0-rc.12", features = ["copy-dylibs", "download-binaries", "ndarray"] }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }
+ndarray = "0.17"
+hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
+thiserror = "2"
+half = { version = "2", features = ["bytemuck"] }
+memmap2 = "0.9"
+
+# Indexing / search
+tantivy = "0.22"
+ignore = "0.4"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-swift = "0.7"
+tree-sitter-bash = "0.25"
+tree-sitter-lua = "0.5"
+tree-sitter-scala = "0.25"
+tree-sitter-dart = "0.1"
+rayon = "1.10"
+globset = "0.4"
+fs2 = "0.4"
+
+# Daemon
+interprocess = "2"
+ctrlc = "3"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+colored = "2"
+indicatif = "0.17"
+
+# Common
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+dirs = "6"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Graphics_Dxgi"], optional = true }
+
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
