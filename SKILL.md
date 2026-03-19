@@ -74,9 +74,12 @@ rawq search "auth" . --token-budget 2000 --json
 
 ### search — find relevant code
 ```bash
-rawq search "query" [path]         # hybrid search (default)
-rawq search "query" [path] --json  # structured JSON for parsing
-rawq "query" [path]                # shorthand (no subcommand needed)
+rawq search "query" [path]                    # hybrid search (default)
+rawq search "query" [path] --json             # structured JSON for parsing
+rawq search "query" [path] --lang rust        # only Rust files
+rawq search "query" [path] --exclude "test*"  # skip test files
+rawq search "query" [path] --top 5            # limit to 5 results
+rawq "query" [path]                           # shorthand (no subcommand needed)
 ```
 
 Key flags:
@@ -96,9 +99,11 @@ Key flags:
 ```bash
 rawq map .                  # definitions with hierarchy
 rawq map . --depth 3        # deeper nesting
+rawq map . --lang rust      # only Rust files
+rawq map . --exclude "test*" # skip test directories
 rawq map . --json           # structured output
 ```
-Use to orient in an unfamiliar codebase before searching.
+Use to orient in an unfamiliar codebase before searching. **Filter with `--lang` and `--exclude`** to avoid noise from irrelevant files.
 
 ### diff — search within changes
 ```bash
