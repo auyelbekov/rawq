@@ -1,3 +1,4 @@
+pub mod calibrate;
 pub mod config;
 pub mod error;
 pub mod gpu;

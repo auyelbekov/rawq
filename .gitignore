@@ -2,3 +2,4 @@
 *.onnx
 models/
 .claude/
+CLAUDE.md
