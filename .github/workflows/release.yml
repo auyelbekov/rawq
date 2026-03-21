@@ -82,3 +82,14 @@ jobs:
             rawq-linux-x86_64.tar.gz
             rawq-macos-aarch64.tar.gz
           generate_release_notes: true
+
+  publish:
+    name: Publish to crates.io
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

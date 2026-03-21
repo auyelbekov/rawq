@@ -21,21 +21,17 @@ use crate::index::chunker;
 /// The per-item cost accounts for both input tensors and transformer
 /// attention/activation memory, which scales with seq_len² and dominates
 /// actual GPU usage.
-fn batch_size_for(embedder: &Embedder, override_size: Option<usize>) -> usize {
+fn batch_size_for(embedder: &mut Embedder, override_size: Option<usize>) -> usize {
     if let Some(bs) = override_size {
         return bs.clamp(1, 128);
     }
+    if !embedder.uses_gpu() {
+        // CPU: measure real throughput instead of guessing a memory budget.
+        return crate::embed::calibrate::calibrated_batch_size(embedder);
+    }
+    // GPU: compute from detected VRAM (a real, measurable hardware limit).
     let dim = embedder.embed_dim();
     let seq_len = embedder.max_seq_len();
-    // Transformer forward pass memory per item:
-    //   input tensor: dim * seq_len * 4
-    //   attention matrices: O(seq_len²) per head per layer — dominates for long sequences
-    //   activations: proportional to dim * seq_len per layer
-    // We approximate total per-item cost by scaling the input tensor size
-    // by a seq_len-dependent activation factor: (seq_len / 6), floor at 4.
-    // This captures the quadratic attention scaling (Q*K^T scores, FFN intermediates)
-    // without needing model internals. Empirically validated: Snowflake (512 seq)
-    // on 6 GB GPU handles batch≈64 → real per-item ≈ 69 MB, factor ≈ 87 ≈ 512/6.
     let activation_factor = (seq_len / 6).max(4);
     let per_item = match dim
         .checked_mul(seq_len)
@@ -43,25 +39,19 @@ fn batch_size_for(embedder: &Embedder, override_size: Option<usize>) -> usize {
         .and_then(|v| v.checked_mul(activation_factor))
     {
         Some(v) if v > 0 => v,
-        _ => return 1, // overflow or zero → safest batch size
+        _ => return 1,
     };
-    let mem_limit: usize = if embedder.uses_gpu() {
-        std::env::var("RAWQ_VRAM_BUDGET")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or_else(|| {
-                let vram = embedder.gpu_vram();
-                if vram > 0 {
-                    // Use 75% of detected VRAM to leave headroom for OS/other apps
-                    ((vram / 4) * 3) as usize
-                } else {
-                    // Detection failed — conservative 2 GB fallback
-                    2 * 1024 * 1024 * 1024
-                }
-            })
-    } else {
-        512 * 1024 * 1024 // 512 MB for CPU
-    };
+    let mem_limit: usize = std::env::var("RAWQ_VRAM_BUDGET")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            let vram = embedder.gpu_vram();
+            if vram > 0 {
+                ((vram / 4) * 3) as usize
+            } else {
+                2 * 1024 * 1024 * 1024
+            }
+        });
     let computed = mem_limit / per_item;
     computed.max(1)
 }
@@ -638,12 +628,13 @@ fn embed_texts_with_progress(
     batch_size_override: Option<usize>,
 ) -> Result<Vec<Vec<f32>>> {
     let mut batch_size = batch_size_for(embedder, batch_size_override);
-    eprintln!(
-        "  Batch size: {} (gpu={}, vram={:.1} GB)",
-        batch_size,
-        embedder.uses_gpu(),
-        embedder.gpu_vram() as f64 / (1024.0 * 1024.0 * 1024.0),
-    );
+    if embedder.uses_gpu() {
+        eprintln!(
+            "  Batch size: {} (vram={:.1} GB)",
+            batch_size,
+            embedder.gpu_vram() as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
     let mut all_embeddings = Vec::with_capacity(texts.len());
     let mut offset = 0;
     let mut pb: Option<ProgressBar> = None;
