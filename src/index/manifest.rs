@@ -60,6 +60,30 @@ impl Default for Manifest {
     }
 }
 
+/// Determines whether a file needs to be reindexed based on mtime/size changes.
+///
+/// # Parameters
+/// - `root`: absolute path to the root directory
+/// - `rel`: relative path within the root (must be empty if `root` already points to the file)
+fn may_need_reindex(root: &Path, rel: &str, record: &FileRecord) -> bool {
+    let abs_path = match rel {
+        "" => root.to_path_buf(),
+        rel => root.join(rel),
+    };
+    let Ok(meta) = fs::metadata(&abs_path) else {
+        return false;
+    };
+    let mtime = meta
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Use != to detect both newer AND older mtime.
+    // because `git switch/checkout` can make file's mtime go backward.
+    mtime != record.mtime_secs || meta.len() != record.size
+}
+
 impl Manifest {
     pub fn new() -> Self {
         Self {
@@ -236,20 +260,7 @@ impl Manifest {
                 // of re-indexing is needed.
                 let record = &self.files[rel];
                 let abs = root.join(rel);
-                // Use != to detect both newer AND older mtime.
-                // because `git switch/checkout` can make file's mtime go backward.
-                let needs_reindex = if let Ok(meta) = fs::metadata(&abs) {
-                    let curr_mtime = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let curr_size = meta.len();
-                    curr_mtime != record.mtime_secs || curr_size != record.size
-                } else {
-                    false
-                };
+                let needs_reindex = may_need_reindex(root, rel, record);
                 if needs_reindex {
                     changed.push(rel.clone());
                 } else {
@@ -271,20 +282,7 @@ impl Manifest {
             } else {
                 // Git says clean — but verify mtime/size match manifest (catches branch switches)
                 let record = &self.files[rel];
-                let abs = root.join(rel);
-                // Use != to detect both newer AND older mtime.
-                // because `git switch/checkout` can make file's mtime go backward.
-                let needs_reindex = if let Ok(meta) = fs::metadata(&abs) {
-                    let mtime = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    mtime != record.mtime_secs || meta.len() != record.size
-                } else {
-                    false
-                };
+                let needs_reindex = may_need_reindex(root, rel, record);
                 if needs_reindex {
                     changed.push(rel.clone());
                 } else {
@@ -348,18 +346,7 @@ impl Manifest {
             match self.files.get(&rel) {
                 None => added.push(rel),
                 Some(record) => {
-                    // Use != to detect both newer AND older mtime.
-                    // because `git switch/checkout` can make file's mtime go backward.
-                    let meta = fs::metadata(&entry.path)?;
-                    let mtime = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let size = meta.len();
-
-                    if mtime != record.mtime_secs || size != record.size {
+                    if may_need_reindex(&entry.path, "", record) {
                         // mtime/size differ — check content hash to avoid re-chunking
                         if let Some(ref old_hash) = record.content_hash {
                             let new_hash = compute_file_hash(&entry.path)?;
