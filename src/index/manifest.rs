@@ -257,7 +257,7 @@ impl Manifest {
                 // A file is reported as "modified" by `git status`, but it means that the file
                 // has been changed since the last commit, not since the last time we build index.
                 // So we still need to check the modified_time / size against the manifest to determine
-                // of re-indexing is needed.
+                // if re-indexing is needed.
                 let record = &self.files[rel];
                 let abs = root.join(rel);
                 let needs_reindex = may_need_reindex(root, rel, record);
