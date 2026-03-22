@@ -60,6 +60,30 @@ impl Default for Manifest {
     }
 }
 
+/// Determines whether a file needs to be reindexed based on mtime/size changes.
+///
+/// # Parameters
+/// - `root`: absolute path to the root directory
+/// - `rel`: relative path within the root (must be empty if `root` already points to the file)
+fn may_need_reindex(root: &Path, rel: &str, record: &FileRecord) -> bool {
+    let abs_path = match rel {
+        "" => root.to_path_buf(),
+        rel => root.join(rel),
+    };
+    let Ok(meta) = fs::metadata(&abs_path) else {
+        return false;
+    };
+    let mtime = meta
+        .modified()
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Use != to detect both newer AND older mtime.
+    // because `git switch/checkout` can make file's mtime go backward.
+    mtime != record.mtime_secs || meta.len() != record.size
+}
+
 impl Manifest {
     pub fn new() -> Self {
         Self {
@@ -168,9 +192,15 @@ impl Manifest {
                 path
             };
             match status.trim() {
-                "??" => { untracked.insert(path); }
-                "D" | " D" => { deleted.insert(path); }
-                _ => { modified.insert(path); }
+                "??" => {
+                    untracked.insert(path);
+                }
+                "D" | " D" => {
+                    deleted.insert(path);
+                }
+                _ => {
+                    modified.insert(path);
+                }
             }
         }
 
@@ -224,23 +254,35 @@ impl Manifest {
                 // New file (either untracked or tracked but not in manifest)
                 added.push(rel.clone());
             } else if modified.contains(rel) || untracked.contains(rel) {
-                // Modified working tree file
-                changed.push(rel.clone());
+                // A file is reported as "modified" by `git status`, but it means that the file
+                // has been changed since the last commit, not since the last time we build index.
+                // So we still need to check the modified_time / size against the manifest to determine
+                // if re-indexing is needed.
+                let record = &self.files[rel];
+                let abs = root.join(rel);
+                let needs_reindex = may_need_reindex(root, rel, record);
+                if needs_reindex {
+                    changed.push(rel.clone());
+                } else {
+                    // Git says modified but mtime/size unchanged — check content hash
+                    if let Some(ref old_hash) = record.content_hash {
+                        if let Ok(new_hash) = compute_file_hash(&abs) {
+                            if &new_hash != old_hash {
+                                changed.push(rel.clone());
+                            } else {
+                                unchanged.push(rel.clone());
+                            }
+                        } else {
+                            unchanged.push(rel.clone());
+                        }
+                    } else {
+                        unchanged.push(rel.clone());
+                    }
+                }
             } else {
                 // Git says clean — but verify mtime/size match manifest (catches branch switches)
                 let record = &self.files[rel];
-                let abs = root.join(rel);
-                let needs_reindex = if let Ok(meta) = fs::metadata(&abs) {
-                    let mtime = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    mtime != record.mtime_secs || meta.len() != record.size
-                } else {
-                    false
-                };
+                let needs_reindex = may_need_reindex(root, rel, record);
                 if needs_reindex {
                     changed.push(rel.clone());
                 } else {
@@ -274,7 +316,11 @@ impl Manifest {
 
     /// Compare on-disk files against the manifest with custom walk options.
     /// Tries git-based diff first for speed, falls back to mtime+SHA-256 walk.
-    pub fn diff_with_options(&self, root: &Path, walk_opts: &walker::WalkOptions) -> Result<ManifestDiff> {
+    pub fn diff_with_options(
+        &self,
+        root: &Path,
+        walk_opts: &walker::WalkOptions,
+    ) -> Result<ManifestDiff> {
         // Try git-based diff first (faster for git repos)
         if let Some(diff) = self.try_git_diff(root, walk_opts) {
             return Ok(diff);
@@ -289,7 +335,8 @@ impl Manifest {
         let mut seen = HashMap::new();
         for entry in &entries {
             let rel = crate::index::normalize_path(
-                &entry.path
+                &entry
+                    .path
                     .strip_prefix(root)
                     .unwrap_or(&entry.path)
                     .to_string_lossy(),
@@ -299,16 +346,7 @@ impl Manifest {
             match self.files.get(&rel) {
                 None => added.push(rel),
                 Some(record) => {
-                    let meta = fs::metadata(&entry.path)?;
-                    let mtime = meta
-                        .modified()
-                        .unwrap_or(SystemTime::UNIX_EPOCH)
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let size = meta.len();
-
-                    if mtime != record.mtime_secs || size != record.size {
+                    if may_need_reindex(&entry.path, "", record) {
                         // mtime/size differ — check content hash to avoid re-chunking
                         if let Some(ref old_hash) = record.content_hash {
                             let new_hash = compute_file_hash(&entry.path)?;
@@ -433,8 +471,7 @@ mod tests {
     #[test]
     fn manifest_diff_detects_added() {
         let m = Manifest::new();
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
         let diff = m.diff(&root).unwrap();
         // Fresh manifest => all files are "added"
         assert!(!diff.added.is_empty());
@@ -456,14 +493,25 @@ mod tests {
     fn manifest_diff_lists_are_sorted() {
         // RWQ-244: verify deterministic ordering
         let mut m = Manifest::new();
-        m.files.insert("z.rs".to_string(), FileRecord {
-            mtime_secs: 100, size: 50, chunk_ids: vec![0], content_hash: None,
-        });
-        m.files.insert("a.rs".to_string(), FileRecord {
-            mtime_secs: 100, size: 50, chunk_ids: vec![1], content_hash: None,
-        });
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("testdata");
+        m.files.insert(
+            "z.rs".to_string(),
+            FileRecord {
+                mtime_secs: 100,
+                size: 50,
+                chunk_ids: vec![0],
+                content_hash: None,
+            },
+        );
+        m.files.insert(
+            "a.rs".to_string(),
+            FileRecord {
+                mtime_secs: 100,
+                size: 50,
+                chunk_ids: vec![1],
+                content_hash: None,
+            },
+        );
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata");
         let diff = m.diff(&root).unwrap();
         // removed should be sorted alphabetically
         if diff.removed.len() >= 2 {
