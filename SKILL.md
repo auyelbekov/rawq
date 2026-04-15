@@ -1,3 +1,20 @@
+---
+name: rawq
+description: "Semantic and lexical hybrid codebase search engine. Returns ranked code chunks with file paths, line ranges, scope labels, and confidence scores. Use when you need to find code by concept, not just keyword."
+user-invocable: true
+triggers:
+  - search the codebase for
+  - find where this is implemented
+  - where is the logic for
+  - search for code that handles
+  - look up in the codebase
+  - rawq search
+  - map the codebase structure
+  - find relevant code
+  - where is the retry logic
+  - how does the app handle
+---
+
 # rawq — Agent Usage Guide
 
 Context retrieval engine. Semantic + lexical hybrid search over codebases. Returns ranked code chunks with file paths, line ranges, scope labels, and confidence scores.
