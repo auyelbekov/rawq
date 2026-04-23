@@ -991,17 +991,30 @@ fn enrich_content(
 
     let lines: Vec<&str> = source.lines().collect();
 
-    // Context before (chunk.lines is 1-based)
-    let ctx_before_start = chunk.lines[0].saturating_sub(1 + context_lines);
-    let ctx_before_end = chunk.lines[0].saturating_sub(1);
+    // Context before (chunk.lines is 1-based).
+    // Clamp both ends against `lines.len()` — if the source has shrunk since
+    // indexing (FS watcher lag, stale chunk), the stored line numbers may
+    // exceed the current line count. Without the `.min(lines.len())` guard,
+    // `lines[start..end]` panics with out-of-bounds. Returning an empty
+    // `context_before` is the safe fallback.
+    let ctx_before_start = chunk.lines[0]
+        .saturating_sub(1 + context_lines)
+        .min(lines.len());
+    let ctx_before_end = chunk.lines[0]
+        .saturating_sub(1)
+        .min(lines.len());
     let context_before = if ctx_before_start < ctx_before_end {
         lines[ctx_before_start..ctx_before_end].join("\n")
     } else {
         String::new()
     };
 
-    // Chunk content from source (fresher than stored)
-    let chunk_start = chunk.lines[0].saturating_sub(1);
+    // Chunk content from source (fresher than stored).
+    // `chunk_end` already clamped; do the same for `chunk_start` — a stale
+    // chunk with `lines[0] > lines.len()` otherwise causes out-of-bounds panic
+    // (Vec::index panics when start > end, which happens once both are beyond
+    // the real length and clamping only one end leaves start > end).
+    let chunk_start = chunk.lines[0].saturating_sub(1).min(lines.len());
     let chunk_end = chunk.lines[1].min(lines.len());
     let content = lines[chunk_start..chunk_end].join("\n");
 
@@ -1088,5 +1101,54 @@ mod tests {
         assert_eq!(enriched.content, "line3\nline4\nline5");
         assert!(enriched.context_before.is_empty());
         assert!(enriched.context_after.is_empty());
+    }
+
+    /// Regression test for tunaFlow insightStabilityPlan Subtask 01:
+    /// A stale chunk pointing past the current file length must not panic —
+    /// the slice operations in `enrich_content` must be clamped against
+    /// `lines.len()`. Scenario: file shrank from original indexing (FS watcher
+    /// lag), so `chunk.lines[0] = 98` while source has only 44 lines.
+    #[test]
+    fn stale_chunk_past_file_end_does_not_panic() {
+        use std::io::Write;
+        // Manual temp dir — rawq has no tempfile dev-dep; keep dep footprint unchanged.
+        let tmp = std::env::temp_dir().join(format!(
+            "rawq-stale-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        // macOS 의 /var → /private/var 심볼릭 링크 때문에 canonicalize 값이 달라
+        // `starts_with(root)` 가드에 막혀 early-return 경로로 빠진다 (fallback content 반환).
+        // root 를 canonicalize 한 값으로 넘겨야 실제 clamp 경로에 도달.
+        let tmp = tmp.canonicalize().unwrap();
+        let file_path = tmp.join("shrunk.txt");
+        let mut f = std::fs::File::create(&file_path).unwrap();
+        for i in 1..=44 {
+            writeln!(f, "line {}", i).unwrap();
+        }
+        drop(f);
+
+        let chunk = StoredChunk {
+            id: 1,
+            // Points to lines far beyond the current file length (stale)
+            file: "shrunk.txt".to_string(),
+            lines: [98, 105],
+            language: crate::index::Language::Rust,
+            scope: "stale".to_string(),
+            content: "stored-content".to_string(),
+            kind: "function_item".to_string(),
+        };
+
+        // Must not panic. Context fields collapse to empty strings because
+        // the start/end clamp to `lines.len()` and yield empty ranges.
+        let enriched = enrich_content(&chunk, &tmp, 3, false);
+        assert!(enriched.context_before.is_empty(), "ctx_before must clamp");
+        assert!(enriched.content.is_empty(), "chunk slice must clamp");
+        assert!(enriched.context_after.is_empty(), "ctx_after clamp preserved");
+
+        // Cleanup (best-effort)
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
