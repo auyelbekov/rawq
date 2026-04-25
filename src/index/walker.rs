@@ -61,7 +61,7 @@ pub fn walk_directory_with_options(root: &Path, opts: &WalkOptions) -> Result<Ve
         Some(build_exclude_set(&opts.exclude_patterns)?)
     };
 
-    for result in WalkBuilder::new(root).build() {
+    for result in WalkBuilder::new(root).require_git(false).build() {
         let entry = result?;
         if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
@@ -166,5 +166,35 @@ mod tests {
             .join("testdata")
             .join("readme.md");
         assert!(!is_binary(&root));
+    }
+
+    #[test]
+    fn test_gitignore_respected_without_dot_git() {
+        // Regression: rawq must honor .gitignore even when the tree is not a
+        // git repository (no .git directory). Without `require_git(false)` the
+        // `ignore` crate silently drops the .gitignore rules.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::fs::write(root.join("src").join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.join("target").join("junk.rs"), "fn junk() {}").unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+
+        let entries = walk_directory(root).unwrap();
+        let paths: Vec<String> = entries
+            .iter()
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            paths.iter().any(|p| p.ends_with("src/main.rs")),
+            "src/main.rs should be indexed: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.contains("target")),
+            "target/ should be excluded by .gitignore: {paths:?}"
+        );
     }
 }
