@@ -4,6 +4,8 @@ Context retrieval engine for AI agents.
 
 Semantic + lexical search over codebases. Single Rust binary. Fully offline. Built for AI agents.
 
+**[rawq.dev](https://rawq.dev)** · [Install](#install) · [crates.io](https://crates.io/crates/rawq)
+
 ![demo](https://github.com/user-attachments/assets/55e739e6-70c7-4648-a386-cf13062f3be9)
 
 ## Why
